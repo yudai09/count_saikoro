@@ -1,89 +1,138 @@
-# -*- coding:utf-8 -*-
-# I have referenced below example of Chainer
-# https://github.com/chainer/chainer/blob/master/examples/cifar/train_cifar.py
+import torch
+from torch import nn
+from torch import optim
+from torch.autograd import Variable
+from torch.utils.data import DataLoader
+import torch.nn.functional as F
+import torchvision
+from torchvision import transforms
+from SaikoroCombDataset import SaikoroCombDataset
 
-import chainer
-import chainer.links as L
-from chainer import training
-from chainer.training import extensions
-from chainer.training import triggers
 
-from chainer.datasets import get_cross_validation_datasets
+class MyModel(torch.nn.Module):
+    def __init__(self, nb_class):
+        super(MyModel, self).__init__()
 
-import models.VGG
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 64, 5),
+            nn.Conv2d(64, 64, 5),
+            nn.Conv2d(64, 128, 5))
 
-from gen_image_dataset import gen_image_dataset
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(3, 64, 5),
+            nn.Conv2d(64, 64, 5),
+            nn.Conv2d(64, 128, 5))
 
-def main(batchsize=128, learnrate=0.1, epoch=300, gpu=0, out='result', resume='', early_stopping=False):
-    print('GPU: {}'.format(gpu))
-    print('# Minibatch-size: {}'.format(batchsize))
-    print('# epoch: {}'.format(epoch))
-    print('')
+        self.fc = nn.Sequential(
+            nn.Linear(128 * 20 * 20 * 2, 120),
+            nn.Linear(120, 84),
+            nn.Linear(84, nb_class),
+        )
 
-    cross_validation_datasets = get_cross_validation_datasets(gen_image_dataset(), 2)
+    def forward(self, x, y):
+        x1 = self.conv1(x)
+        x2 = self.conv2(y)
 
-    for test, train in cross_validation_datasets:
-        model = L.Classifier(models.VGG.VGG())
-        if gpu >= 0:
-            # Make a specified GPU current
-            chainer.cuda.get_device_from_id(gpu).use()
-            model.to_gpu()  # Copy the model to the GPU
+        x1 = x1.view(-1, 128 * 20 * 20)
+        x2 = x2.view(-1, 128 * 20 * 20)
 
-        optimizer = chainer.optimizers.MomentumSGD(learnrate)
-        optimizer.setup(model)
-        optimizer.add_hook(chainer.optimizer.WeightDecay(5e-4))
+        x1x2 = torch.cat((x1, x2), 1)
 
-        train_iter = chainer.iterators.SerialIterator(train, batchsize)
-        test_iter = chainer.iterators.SerialIterator(test, batchsize,
-                                                     repeat=False, shuffle=False)
+        return self.fc(x1x2)
 
-        stop_trigger = (epoch, 'epoch')
-        # Early stopping option
-        if early_stopping:
-            stop_trigger = triggers.EarlyStoppingTrigger(
-                monitor=early_stopping, verbose=True,
-                max_trigger=(epoch, 'epoch'))
 
-        # Set up a trainer
-        updater = training.StandardUpdater(
-            train_iter, optimizer, device=gpu)
-        trainer = training.Trainer(updater, stop_trigger, out=out)
+def main():
+    # eye sum in range (2-12) but set nb_class 13.
+    # it's trivial difference.
+    model = MyModel(13)
 
-        # Evaluate the model with the test dataset for each epoch
-        trainer.extend(extensions.Evaluator(test_iter, model, device=gpu))
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.9)
 
-        # Reduce the learning rate by half every 25 epochs.
-        trainer.extend(extensions.ExponentialShift('lr', 0.5),
-                       trigger=(25, 'epoch'))
+    if torch.cuda.is_available():
+        print('use cuda.')
+        print('loading model.')
+        model = model.cuda()
+        print('loading criterion.')
+        criterion = criterion.cuda()
+        print('loading finished.')
 
-        # Dump a computational graph from 'loss' variable at the first iteration
-        # The "main" refers to the target link of the "main" optimizer.
-        trainer.extend(extensions.dump_graph('main/loss'))
+    train_dataset = SaikoroCombDataset(train=True)
+    test_dataset = SaikoroCombDataset(train=False)
 
-        # Take a snapshot at each epoch
-        trainer.extend(extensions.snapshot(), trigger=(epoch, 'epoch'))
+    running_loss = 0
+    batch_size = 32
 
-        # Write a log of evaluation statistics for each epoch
-        trainer.extend(extensions.LogReport())
+    for epoch in range(100):
+        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+        test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+        running_loss = 0.0
 
-        # Print selected entries of the log to stdout
-        # Here "main" refers to the target link of the "main" optimizer again, and
-        # "validation" refers to the default name of the Evaluator extension.
-        # Entries other than 'epoch' are reported by the Classifier link, called by
-        # either the updater or the evaluator.
-        trainer.extend(extensions.PrintReport(
-            ['epoch', 'main/loss', 'validation/main/loss',
-             'main/accuracy', 'validation/main/accuracy', 'elapsed_time']))
+        for batch_iter, batch_data in enumerate(train_dataloader):
+            image1, image2, label = batch_data
 
-        # Print a progress bar to stdout
-        trainer.extend(extensions.ProgressBar())
+            image1 = Variable(image1, requires_grad=True)
+            image2 = Variable(image2, requires_grad=True)
+            label = Variable(label, requires_grad=False)
 
-        if resume:
-            # Resume from a snapshot
-            chainer.serializers.load_npz(resume, trainer)
+            if torch.cuda.is_available():
+                image1 = image1.cuda()
+                image2 = image2.cuda()
+                label = label.cuda()
 
-        # Run the training
-        trainer.run()
+            # zero the parameter gradients
+            optimizer.zero_grad()
+
+            # forward + backward + optimize
+            outputs = model(image1, image2)
+
+            # https://github.com/pytorch/pytorch/issues/3670
+            # label should be 1d tensor.
+            label = label.squeeze(1)
+
+            loss = criterion(outputs, label)
+            loss.backward()
+
+            optimizer.step()
+
+            # print statistics
+            running_loss += loss.data[0]
+
+        print('[%d] test loss: %.3f' %
+              (epoch + 1, running_loss / (len(train_dataset) / batch_size)))
+
+        running_loss = 0
+        for batch_iter, batch_data in enumerate(test_dataloader):
+            image1, image2, label = batch_data
+
+            image1 = Variable(image1, requires_grad=True)
+            image2 = Variable(image2, requires_grad=True)
+            label = Variable(label, requires_grad=False)
+
+            if torch.cuda.is_available():
+                image1 = image1.cuda()
+                image2 = image2.cuda()
+                label = label.cuda()
+
+            # zero the parameter gradients
+            optimizer.zero_grad()
+
+            # forward + backward + optimize
+            outputs = model(image1, image2)
+
+            # https://github.com/pytorch/pytorch/issues/3670
+            # label should be 1d tensor.
+            label = label.squeeze(1)
+            loss = criterion(outputs, label)
+            # do not backward in test mode
+            # loss.backward()
+            optimizer.step()
+
+            # print statistics
+            running_loss += loss.data[0]
+
+        print('[%d] validation loss: %.3f' %
+              (epoch + 1, running_loss / (len(test_dataset) / batch_size)))
 
 
 if __name__ == '__main__':
