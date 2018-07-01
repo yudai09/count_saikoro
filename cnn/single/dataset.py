@@ -3,7 +3,6 @@ from collections import defaultdict
 import glob
 import itertools
 import numpy
-import pandas
 from PIL import Image
 import os
 from sklearn.model_selection import train_test_split
@@ -14,8 +13,6 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 import re
 
-if os.name == 'nt':
-    import win_unicode_console
 
 class SaikoroImageDataSet(Dataset):
     def __init__(self, X=None, y=None, train=True):
@@ -29,10 +26,10 @@ class SaikoroImageDataSet(Dataset):
             self.X = X
             self.y = y
         else:
-            files = "images/*.jpg"
+            files = "../images/*.jpg"
             files = glob.glob(files)
             self.X = files
-            self.y = [int(file.split(".jpg")[0].split("_")[1])-1 for file in files]
+            self.y = [int(file.split(".jpg")[0].split("_")[1]) for file in files]
             print(self.X)
             print(self.y)
 
@@ -63,7 +60,7 @@ class SaikoroImageDataSet(Dataset):
 
 
 if __name__ == "__main__":
-    if os.name == 'nt':
-        win_unicode_console.enable()
+    # if os.name == 'nt':
+    #     win_unicode_console.enable()
 
     SaikoroImageDataSet()

@@ -7,54 +7,14 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import torchvision
 from torchvision import transforms
-from torchvision.models.resnet import resnet18, resnet50
 from tensorboardX import SummaryWriter
 from dataset import SaikoroImageDataSet
 import numpy as np
 import os
 
-import win_unicode_console
-from memory_profiler import profile
-
-from pretrainedmodels import inceptionv4
-
-
-class NetResnet50(torch.nn.Module):
-    def __init__(self):
-        super(NetResnet50, self).__init__()
-        self.cnn = nn.Sequential(*list(resnet50(pretrained=True).children())[:-2])
-        # self.cnn = resnet50(pretrained=True)
-
-        self.fc = nn.Sequential(
-            nn.Linear(2048 * 4 * 5, 126),
-            nn.ReLU(),
-
-            nn.Dropout(0.5),
-            nn.Linear(126, 6),
-            nn.ReLU(),
-        )
-
-    def forward(self, X):
-        X = self.cnn(X)
-        X = X.view(-1, 2048 * 4 * 5)
-        return self.fc(X)
-
-    def setCNNTrainable(self, trainable):
-        if trainable:
-            print("train CNN")
-            for p in self.cnn.parameters():
-                p.requires_grad = True
-        else:
-            print("do not train CNN")
-            for p in self.cnn.parameters():
-                p.requires_grad = False
-
+from model import NetResnet50
 
 def main():
-    # workaround a bug for windows
-    # https://bugs.python.org/issue32245
-    win_unicode_console.enable()
-
     dataset = SaikoroImageDataSet()
 
     train_dataset, test_dataset = dataset.train_test_split(train_split=0.8)
@@ -71,7 +31,7 @@ def main():
         criterion = criterion.cuda()
         print('loading finished.')
 
-    for trainable, epochs in [(False, 50), (True, 100)]:
+    for trainable, epochs in [(False, 25), (True, 100)]:
     # for trainable, epochs in [(True, 200)]:
     # for trainable in [True]:
         model.setCNNTrainable(trainable)
@@ -83,7 +43,7 @@ def main():
 
 def train_test(model, criterion, optimizer, train_dataset, test_dataset, epochs, k=0):
     # model path to save weights
-    model_path = 'models/model_{}.pth'.format(k)
+    model_path = '/output/model/model_{}.pth'.format(k)
     # tensorboard summary writer
     writer_train = SummaryWriter('./logs/train/{}'.format(k))
     writer_test = SummaryWriter('./logs/test/{}'.format(k))
@@ -178,7 +138,9 @@ def model_save(model, path):
     dirname = os.path.dirname(path)
     if not os.path.exists(dirname):
         os.makedirs(dirname)
-    torch.save(model.state_dict(), path)
+    torch.save(model.cpu().state_dict(), path)
+    if torch.cuda.is_available():
+        model.cuda()
 
 if __name__ == '__main__':
     main()
